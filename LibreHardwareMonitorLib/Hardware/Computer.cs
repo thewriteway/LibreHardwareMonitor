@@ -631,7 +631,6 @@ public class Computer : IComputer
         }
 
         OpCode.Close();
-        InpOut.Close();
         Ring0.Close();
         Mutexes.Close();
 

@@ -162,8 +162,8 @@ internal class RyzenSMU
 
         _supportedCPU = Environment.Is64BitOperatingSystem == Environment.Is64BitProcess && SetAddresses(_cpuCodeName);
 
-        if (_supportedCPU && InpOut.Open())
-            SetupPmTableAddrAndSize();
+        //if (_supportedCPU && InpOut.Open())
+            //SetupPmTableAddrAndSize();
     }
 
     private static CpuCodeName GetCpuCodeName(uint family, uint model, uint packageType)
@@ -309,9 +309,9 @@ internal class RyzenSMU
 
         IntPtr pMemory = Environment.Is64BitProcess ? new IntPtr(_dramBaseAddr | (long)_dramAddrHi << 32) : new IntPtr(_dramBaseAddr);
 
-        byte[] bytes = InpOut.ReadMemory(pMemory, _pmTableSize);
-        if (bytes != null)
-            Buffer.BlockCopy(bytes, 0, table, 0, bytes.Length);
+        //byte[] bytes = InpOut.ReadMemory(pMemory, _pmTableSize);
+        //if (bytes != null)
+          //  Buffer.BlockCopy(bytes, 0, table, 0, bytes.Length);
 
         return table;
     }

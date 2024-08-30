@@ -544,7 +544,7 @@ internal class LpcIO
             port.IT87Enter();
             chipId = port.ReadWord(CHIP_ID_REGISTER);
         }
-        
+
         Chip chip = chipId switch
         {
             0x8613 => Chip.IT8613E,
@@ -653,16 +653,16 @@ internal class LpcIO
 
         Vendor vendor = DetectVendor();
 
-        IGigabyteController gigabyteController = FindGigabyteECUsingSmfi(port, chip, vendor);
-        if (gigabyteController != null)
-            return gigabyteController;
+        //IGigabyteController gigabyteController = FindGigabyteECUsingSmfi(port, chip, vendor);
+        //if (gigabyteController != null)
+            //return gigabyteController;
 
         // ECIO is only available on AMD motherboards with IT8791E/IT8792E/IT8795E.
         if (chip == Chip.IT8792E && vendor == Vendor.AMD)
         {
-            gigabyteController = EcioPortGigabyteController.TryCreate();
-            if (gigabyteController != null)
-                return gigabyteController;
+        //    gigabyteController = EcioPortGigabyteController.TryCreate();
+          //  if (gigabyteController != null)
+            //    return gigabyteController;
         }
 
         return null;
@@ -680,48 +680,7 @@ internal class LpcIO
         }
     }
 
-    private IGigabyteController FindGigabyteECUsingSmfi(LpcPort port, Chip chip, Vendor vendor)
-    {
-        port.Select(IT87XX_SMFI_LDN);
-
-        // Check if the SMFI logical device is enabled
-        byte enabled = port.ReadByte(IT87_LD_ACTIVE_REGISTER);
-        Thread.Sleep(1);
-        byte enabledVerify = port.ReadByte(IT87_LD_ACTIVE_REGISTER);
-
-        // The EC has no SMFI or it's RAM access is not enabled, assume the controller is not present
-        if (enabled != enabledVerify || enabled == 0)
-            return null;
-
-        // Read the host RAM address that maps to the Embedded Controller's RAM (two registers).
-        uint addressHi = 0;
-        uint addressHiVerify = 0;
-        uint address = port.ReadWord(IT87_SMFI_HLPC_RAM_BASE_ADDRESS_REGISTER);
-        if (chip == Chip.IT87952E)
-            addressHi = port.ReadByte(IT87_SMFI_HLPC_RAM_BASE_ADDRESS_REGISTER_HIGH);
-
-        Thread.Sleep(1);
-        uint addressVerify = port.ReadWord(IT87_SMFI_HLPC_RAM_BASE_ADDRESS_REGISTER);
-        if (chip == Chip.IT87952E)
-            addressHiVerify = port.ReadByte(IT87_SMFI_HLPC_RAM_BASE_ADDRESS_REGISTER_HIGH);
-
-        if ((address != addressVerify) || (addressHi != addressHiVerify))
-            return null;
-
-        // Address is xryy, Host Address is FFyyx000
-        // For IT87952E, Address is rzxryy, Host Address is (0xFC000000 | 0x0zyyx000)
-        uint hostAddress;
-        if (chip == Chip.IT87952E)
-            hostAddress = 0xFC000000;
-        else
-            hostAddress = 0xFF000000;
-
-        hostAddress |= (address & 0xF000) | ((address & 0xFF) << 16) | ((addressHi & 0xF) << 24);
-
-        return new IsaBridgeGigabyteController(hostAddress, vendor);
-    }
-
-    // ReSharper disable InconsistentNaming
+        // ReSharper disable InconsistentNaming
     private const byte BASE_ADDRESS_REGISTER = 0x60;
     private const byte CHIP_ID_REGISTER = 0x20;
     private const byte CHIP_REVISION_REGISTER = 0x21;
