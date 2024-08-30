@@ -37,7 +37,9 @@ public enum Model
     Z690_Extreme,
     Z690_Steel_Legend,
     Z790_Pro_RS,
+    X570_Phantom_Gaming_4,
     Z790_Taichi,
+    B650M_C,
     H61M_DGS,
 
     // ASUS
@@ -66,6 +68,7 @@ public enum Model
     ROG_STRIX_Z390_I_GAMING,
     ROG_STRIX_Z690_A_GAMING_WIFI_D4,
     ROG_MAXIMUS_XI_FORMULA,
+    ROG_MAXIMUS_XII_Z490_FORMULA,
     ROG_MAXIMUS_X_HERO_WIFI_AC,
     ROG_MAXIMUS_Z690_FORMULA,
     ROG_MAXIMUS_Z690_HERO,

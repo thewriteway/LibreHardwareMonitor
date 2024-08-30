@@ -374,6 +374,8 @@ internal class Identification
                 return Model.X570_Taichi;
             case var _ when name.Equals("X570 Phantom Gaming-ITX/TB3", StringComparison.OrdinalIgnoreCase):
                 return Model.X570_Phantom_Gaming_ITX;
+            case var _ when name.Equals("X570 Phantom Gaming 4", StringComparison.OrdinalIgnoreCase):
+                return Model.X570_Phantom_Gaming_4;
             case var _ when name.Equals("AX370-Gaming 5", StringComparison.OrdinalIgnoreCase):
                 return Model.AX370_Gaming_5;
             case var _ when name.Equals("TUF X470-PLUS GAMING", StringComparison.OrdinalIgnoreCase):
@@ -523,6 +525,8 @@ internal class Identification
                 return Model.ROG_STRIX_Z690_A_GAMING_WIFI_D4;
             case var _ when name.Equals("ROG MAXIMUS XI FORMULA", StringComparison.OrdinalIgnoreCase):
                 return Model.ROG_MAXIMUS_XI_FORMULA;
+            case var _ when name.Equals("ROG MAXIMUS XII FORMULA", StringComparison.OrdinalIgnoreCase):
+                return Model.ROG_MAXIMUS_XII_Z490_FORMULA;
             case var _ when name.Equals("ROG MAXIMUS X HERO (WI-FI AC)", StringComparison.OrdinalIgnoreCase):
                 return Model.ROG_MAXIMUS_X_HERO_WIFI_AC;
             case var _ when name.Equals("ROG MAXIMUS Z690 FORMULA", StringComparison.OrdinalIgnoreCase):
@@ -555,6 +559,11 @@ internal class Identification
             case var _ when name.Equals("Z790 Taichi", StringComparison.OrdinalIgnoreCase):
             case var _ when name.Equals("Z790 Taichi Carrara", StringComparison.OrdinalIgnoreCase):
                 return Model.Z790_Taichi;
+            case var _ when name.Equals("B650M-C", StringComparison.OrdinalIgnoreCase):
+            case var _ when name.Equals("B650M-CW", StringComparison.OrdinalIgnoreCase):
+            case var _ when name.Equals("B650M-CX", StringComparison.OrdinalIgnoreCase):
+            case var _ when name.Equals("B650M-CWX", StringComparison.OrdinalIgnoreCase):
+                return Model.B650M_C;
             case var _ when name.Equals("B660 DS3H DDR4-Y1",StringComparison.OrdinalIgnoreCase):
             case var _ when name.Equals("B660 DS3H DDR4",StringComparison.OrdinalIgnoreCase):
                 return Model.B660_DS3H_DDR4;
