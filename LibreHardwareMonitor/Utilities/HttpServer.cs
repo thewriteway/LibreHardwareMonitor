@@ -18,10 +18,10 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web;
 using LibreHardwareMonitor.Hardware;
 using LibreHardwareMonitor.UI;
-using Newtonsoft.Json.Linq;
 
 namespace LibreHardwareMonitor.Utilities;
 
@@ -30,7 +30,8 @@ public class HttpServer
     private readonly HttpListener _listener;
     private readonly Node _root;
     private readonly IElement _rootElement;
-    private Thread _listenerThread;
+    private Task _listenerTask;
+    private CancellationTokenSource _cts;
 
     public HttpServer(Node node, IElement rootElement, string ip, int port, bool authEnabled = false, string userName = "", string password = "")
     {
@@ -58,7 +59,11 @@ public class HttpServer
             return;
 
         StopHttpListener();
-        _listener.Abort();
+        try
+        {
+            _listener?.Abort();
+        }
+        catch { }
     }
 
     public bool AuthEnabled { get; set; }
@@ -118,11 +123,8 @@ public class HttpServer
             _listener.AuthenticationSchemes = AuthEnabled ? AuthenticationSchemes.Basic : AuthenticationSchemes.Anonymous;
             _listener.Start();
 
-            if (_listenerThread == null)
-            {
-                _listenerThread = new Thread(HandleRequests);
-                _listenerThread.Start();
-            }
+            _cts = new CancellationTokenSource();
+            _listenerTask = Task.Run(() => ProcessRequestsAsync(_cts.Token));
         }
         catch (Exception)
         {
@@ -139,13 +141,14 @@ public class HttpServer
 
         try
         {
-            _listenerThread?.Abort();
-            _listener.Stop();
-            _listenerThread = null;
+            _cts?.Cancel();
+            _listenerTask?.Wait(TimeSpan.FromSeconds(5)); // Graceful wait
+            _listener?.Stop();
+            _cts?.Dispose();
         }
         catch (HttpListenerException)
         { }
-        catch (ThreadAbortException)
+        catch (OperationCanceledException)
         { }
         catch (NullReferenceException)
         { }
@@ -155,12 +158,33 @@ public class HttpServer
         return true;
     }
 
-    private void HandleRequests()
+    private async Task ProcessRequestsAsync(CancellationToken cancellationToken)
     {
-        while (_listener.IsListening)
+        while (_listener.IsListening && !cancellationToken.IsCancellationRequested)
         {
-            IAsyncResult context = _listener.BeginGetContext(ListenerCallback, _listener);
-            context.AsyncWaitHandle.WaitOne();
+            try
+            {
+                var context = await _listener.GetContextAsync();
+                _ = Task.Run(() => HandleContextAsync(context), cancellationToken);
+            }
+            catch (HttpListenerException ex) when (ex.ErrorCode == 50)
+            {
+                // Handle Windows update bug (e.g., 2025-10 Cumulative Update): retry after delay
+                System.Diagnostics.Debug.WriteLine($"HttpListener error (code {ex.ErrorCode}): {ex.Message}. Retrying in 5 seconds.");
+                await Task.Delay(5000, cancellationToken);
+            }
+            catch (ObjectDisposedException)
+            {
+                break; // Listener stopped
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Unexpected HttpListener error: {ex.Message}");
+            }
         }
     }
 
@@ -194,7 +218,6 @@ public class HttpServer
 
         return null;
     }
-
     public void SetSensorControlValue(SensorNode sNode, string value)
     {
         if (sNode.Sensor.Control == null)
@@ -228,7 +251,7 @@ public class HttpServer
     //{"result":"fail","message":"Some error message"}
     //or:
     //{"result":"ok"}
-    private void HandleSensorRequest(HttpListenerRequest request, JObject result)
+    private void HandleSensorRequest(HttpListenerRequest request, Dictionary<string, object> result)
     {
         IDictionary<string, string> dict = ToDictionary(HttpUtility.ParseQueryString(request.Url.Query));
 
@@ -283,7 +306,7 @@ public class HttpServer
     //Currently the only supported base URL is http://localhost:8085/Sensor.
     private string HandlePostRequest(HttpListenerRequest request)
     {
-        JObject result = new() { ["result"] = "ok" };
+        var result = new Dictionary<string, object> { ["result"] = "ok" };
 
         try
         {
@@ -306,49 +329,25 @@ public class HttpServer
             result["result"] = "fail";
             result["message"] = e.ToString();
         }
-#if DEBUG
-        return result.ToString(Newtonsoft.Json.Formatting.Indented);
-#else
-        return result.ToString(Newtonsoft.Json.Formatting.None);
-#endif
+        return System.Text.Json.JsonSerializer.Serialize(result);
     }
 
-    private void ListenerCallback(IAsyncResult result)
+    private async Task HandleContextAsync(HttpListenerContext context)
     {
-        HttpListener listener = (HttpListener)result.AsyncState;
-        if (listener == null || !listener.IsListening)
-            return;
-
-        // Call EndGetContext to complete the asynchronous operation.
-        HttpListenerContext context;
-        try
-        {
-            context = listener.EndGetContext(result);
-        }
-        catch (Exception)
-        {
-            return;
-        }
-
         HttpListenerRequest request = context.Request;
-
-        bool authenticated;
+        bool authenticated = true;
 
         if (AuthEnabled)
         {
             try
             {
                 HttpListenerBasicIdentity identity = (HttpListenerBasicIdentity)context.User.Identity;
-                authenticated = (identity.Name == UserName) & (ComputeSHA256(identity.Password) == Password);
+                authenticated = (identity.Name == UserName) && (ComputeSHA256(identity.Password) == PasswordSHA256);
             }
             catch
             {
                 authenticated = false;
             }
-        }
-        else
-        {
-            authenticated = true;
         }
 
         if (authenticated)
@@ -358,17 +357,7 @@ public class HttpServer
                 case "POST":
                     {
                         string postResult = HandlePostRequest(request);
-
-                        Stream output = context.Response.OutputStream;
-                        byte[] utfBytes = Encoding.UTF8.GetBytes(postResult);
-
-                        context.Response.AddHeader("Cache-Control", "no-cache");
-                        context.Response.ContentLength64 = utfBytes.Length;
-                        context.Response.ContentType = "application/json";
-
-                        output.Write(utfBytes, 0, utfBytes.Length);
-                        output.Close();
-
+                        await SendResponseAsync(context.Response, postResult, "application/json");
                         break;
                     }
                 case "GET":
@@ -377,23 +366,27 @@ public class HttpServer
 
                         if (requestedFile == "data.json")
                         {
-                            SendJson(context.Response, request);
+                            await SendJsonAsync(context.Response, request);
+                            return;
+                        }
+
+                        if (requestedFile == "metrics")
+                        {
+                            await SendPrometheusAsync(context.Response, request);
                             return;
                         }
 
                         if (requestedFile.Contains("images_icon"))
                         {
-                            ServeResourceImage(context.Response,
-                                               requestedFile.Replace("images_icon/", string.Empty));
-
+                            await ServeResourceImageAsync(context.Response, requestedFile.Replace("images_icon/", string.Empty));
                             return;
                         }
 
                         if (requestedFile.Contains("Sensor"))
                         {
-                            JObject sensorResult = new();
+                            var sensorResult = new Dictionary<string, object>();
                             HandleSensorRequest(request, sensorResult);
-                            SendJsonSensor(context.Response, sensorResult);
+                            await SendJsonSensorAsync(context.Response, sensorResult);
                             return;
                         }
 
@@ -404,7 +397,7 @@ public class HttpServer
                                 sensor.ResetMin();
                                 sensor.ResetMax();
                             }));
-                            SendJson(context.Response, request);
+                            await SendJsonAsync(context.Response, request);
                             return;
                         }
 
@@ -414,8 +407,7 @@ public class HttpServer
 
                         string[] splits = requestedFile.Split('.');
                         string ext = splits[splits.Length - 1];
-                        ServeResourceFile(context.Response, "Web." + requestedFile.Replace('/', '.'), ext);
-
+                        await ServeResourceFileAsync(context.Response, "Web." + requestedFile.Replace('/', '.'), ext);
                         break;
                     }
                 default:
@@ -436,12 +428,7 @@ public class HttpServer
   <BODY><H4>401 Unauthorized</H4>
   Authorization required.</BODY></HTML> ";
 
-            byte[] buffer = Encoding.UTF8.GetBytes(responseString);
-            context.Response.ContentLength64 = buffer.Length;
-            context.Response.StatusCode = 401;
-            Stream output = context.Response.OutputStream;
-            output.Write(buffer, 0, buffer.Length);
-            output.Close();
+            await SendResponseAsync(context.Response, responseString, "text/html");
         }
 
         try
@@ -453,8 +440,7 @@ public class HttpServer
             // client closed connection before the content was sent
         }
     }
-
-    private void ServeResourceFile(HttpListenerResponse response, string name, string ext)
+    private async Task ServeResourceFileAsync(HttpListenerResponse response, string name, string ext)
     {
         // resource names do not support the hyphen
         name = "LibreHardwareMonitor.Resources." +
@@ -473,15 +459,14 @@ public class HttpServer
                 byte[] buffer = new byte[512 * 1024];
                 try
                 {
-                    Stream output = response.OutputStream;
                     int len;
-                    while ((len = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    while ((len = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                     {
-                        output.Write(buffer, 0, len);
+                        await response.OutputStream.WriteAsync(buffer, 0, len);
                     }
 
-                    output.Flush();
-                    output.Close();
+                    await response.OutputStream.FlushAsync();
+                    response.OutputStream.Close();
                     response.Close();
                 }
                 catch (HttpListenerException)
@@ -497,7 +482,7 @@ public class HttpServer
         response.Close();
     }
 
-    private void ServeResourceImage(HttpListenerResponse response, string name)
+    private async Task ServeResourceImageAsync(HttpListenerResponse response, string name)
     {
         name = "LibreHardwareMonitor.Resources." + name;
 
@@ -509,23 +494,19 @@ public class HttpServer
             {
                 using Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(names[i]);
 
-                Image image = Image.FromStream(stream);
+                using Image image = Image.FromStream(stream);
                 response.ContentType = "image/png";
                 try
                 {
-                    Stream output = response.OutputStream;
-                    using (MemoryStream ms = new())
-                    {
-                        image.Save(ms, ImageFormat.Png);
-                        ms.WriteTo(output);
-                    }
-
-                    output.Close();
+                    using var ms = new MemoryStream();
+                    image.Save(ms, ImageFormat.Png);
+                    byte[] buffer = ms.ToArray();
+                    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                    response.OutputStream.Close();
                 }
                 catch (HttpListenerException)
                 { }
 
-                image.Dispose();
                 response.Close();
                 return;
             }
@@ -535,9 +516,9 @@ public class HttpServer
         response.Close();
     }
 
-    private void SendJson(HttpListenerResponse response, HttpListenerRequest request = null)
+    private async Task SendJsonAsync(HttpListenerResponse response, HttpListenerRequest request = null)
     {
-        JObject json = new();
+        Dictionary<string, object> json = new();
 
         int nodeIndex = 0;
 
@@ -548,46 +529,39 @@ public class HttpServer
         json["Max"] = "Max";
         json["ImageURL"] = string.Empty;
 
-        json["Children"] = new JArray { GenerateJsonForNode(_root, ref nodeIndex) };
+        json["Children"] = new List<object> { GenerateJsonForNode(_root, ref nodeIndex) };
 
-#if DEBUG
-        string responseContent = json.ToString(Newtonsoft.Json.Formatting.Indented);
-#else
-        string responseContent = json.ToString(Newtonsoft.Json.Formatting.None);
-#endif
-        byte[] buffer = Encoding.UTF8.GetBytes(responseContent);
+        byte[] buffer = Encoding.UTF8.GetBytes(System.Text.Json.JsonSerializer.Serialize(json));
 
         bool acceptGzip;
         try
         {
-            acceptGzip = (request != null) && (request.Headers["Accept-Encoding"].ToLower().IndexOf("gzip", StringComparison.OrdinalIgnoreCase) >= 0);
+            acceptGzip = (request != null) && (request.Headers["Accept-Encoding"].IndexOf("gzip", StringComparison.OrdinalIgnoreCase) >= 0);
         }
         catch
         {
             acceptGzip = false;
         }
 
-        if (acceptGzip)
-            response.AddHeader("Content-Encoding", "gzip");
-
         response.AddHeader("Cache-Control", "no-cache");
         response.AddHeader("Access-Control-Allow-Origin", "*");
         response.ContentType = "application/json";
+
         try
         {
             if (acceptGzip)
             {
+                response.AddHeader("Content-Encoding", "gzip");
                 using var ms = new MemoryStream();
                 using (var zip = new GZipStream(ms, CompressionMode.Compress, true))
-                    zip.Write(buffer, 0, buffer.Length);
+                    await zip.WriteAsync(buffer, 0, buffer.Length);
 
                 buffer = ms.ToArray();
             }
 
             response.ContentLength64 = buffer.Length;
-            Stream output = response.OutputStream;
-            output.Write(buffer, 0, buffer.Length);
-            output.Close();
+            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+            response.OutputStream.Close();
         }
         catch (HttpListenerException)
         { }
@@ -595,35 +569,105 @@ public class HttpServer
         response.Close();
     }
 
-    private void SendJsonSensor(HttpListenerResponse response, JObject sensorData)
+    private string GeneratePrometheusResponse(Node node)
     {
-        // Convert the JObject to a JSON string
-        string responseContent = sensorData.ToString(Newtonsoft.Json.Formatting.None);
-        byte[] buffer = Encoding.UTF8.GetBytes(responseContent);
+        string responseStr = "";
+        string lastTagName = "";
 
-        // Add headers and set content type
+        /// Dictionary to convert all data to base units for OpenMetrics
+        /// suffix, factor
+        var units = new Dictionary<SensorType, (string, double)>
+        {
+           { SensorType.Clock, ("hertz", 1000000)},                           //originally megahertz
+           { SensorType.Conductivity, ("seconds_per_centimeter", 0.000001) }, //originally microseconds per centimeter
+           { SensorType.Control, ("percent", 1) },
+           { SensorType.Current, ("amperes", 1) },
+           { SensorType.Data, ("bytes", 1000000000) },                        //originally GB
+           { SensorType.Energy, ("watthour", 0.001) },
+           { SensorType.Factor, ("", 1) },
+           { SensorType.Fan, ("rpms", 1) },
+           { SensorType.Flow, ("liters_per_hour", 1) },
+           { SensorType.Frequency, ("hertz", 1) },
+           { SensorType.Humidity, ("percent", 1) },
+           { SensorType.Level, ("percent", 1) },
+           { SensorType.Load, ("percent", 1) },
+           { SensorType.Noise, ("decibels", 1) },
+           { SensorType.Power, ("watts", 1) },
+           { SensorType.SmallData, ("bytes", 1024*1024) },                    //originally MiB
+           { SensorType.Temperature, ("celsius", 1) },
+           { SensorType.Throughput, ("bytes_per_second", 1000) },             //originally KB
+           { SensorType.TimeSpan, ("seconds", 1) },
+           { SensorType.Timing, ("seconds", 0.000000001 ) },                  //originally nanoseconds
+           { SensorType.Voltage, ("volts", 1) },
+        };
+
+        for (int i = 0; i < node.Nodes.Count; i++)
+        {
+            if (node.Nodes[i].GetType().Name == "HardwareNode")
+            {
+                responseStr += GeneratePrometheusResponse(node.Nodes[i]);
+            }
+
+            if (node.Nodes[i].GetType().Name == "TypeNode")
+            {
+                string prometheusHost = node.Parent.Text;
+                foreach (SensorNode sensor in node.Nodes[i].Nodes)
+                {
+                    string tagHardware = (((HardwareNode)node).Hardware.Parent != null ? ((HardwareNode)node).Hardware.Parent.HardwareType.ToString() : ((HardwareNode)node).Hardware.HardwareType.ToString());
+                    string tagSensorType = sensor.Sensor.SensorType.ToString();
+                    string tagSensorUnits = (units[sensor.Sensor.SensorType].Item1.Length == 0 ? "" : "_" + units[sensor.Sensor.SensorType].Item1);
+                    string tagName = $"lhm_{tagHardware}_{tagSensorType}{tagSensorUnits}";
+                    tagName = tagName.ToLower();
+
+                    string valueSensor = sensor.Text.Replace("#", "");
+                    string valueHardware = node.Text;
+                    string valueId = sensor.Sensor.Identifier.ToString().Split('/').Last();
+                    string valueFamily = node.Nodes[i].Text;
+                    string valueHost = _root.Text;
+
+                    try
+                    {
+
+                        if (lastTagName != tagName)
+                        {
+                            responseStr += $"# TYPE {tagName} gauge\n";
+                            lastTagName = tagName;
+                        }
+
+                        double? tagValue = units[sensor.Sensor.SensorType].Item2 * sensor.Sensor.Value;
+                        responseStr += $$"""{{tagName}} {"sensor"="{{valueSensor}}" "hardware"="{{valueHardware}}" "id"="{{valueId}}" "family"="{{valueFamily}}" "host"="{{valueHost}}"} {{tagValue}}""" + "\n";
+                    }
+                    catch (Exception)
+                    {
+                        responseStr += $"# HELP {lastTagName} This Sensor type is not defined in the prometheus adapter [{sensor.Sensor.SensorType}]\n";
+                        responseStr += $$"""{{tagName}} {"sensor"="{{valueSensor}}" "hardware"="{{valueHardware}}" "id"="{{valueId}}" "family"="{{valueFamily}}" "host"="{{valueHost}}"} {{sensor.Sensor.Value}}""" + "\n";
+                    }
+                }
+            }
+        }
+        return responseStr;
+    }
+
+    private async Task SendPrometheusAsync(HttpListenerResponse response, HttpListenerRequest request = null)
+    {
+        string responseContent = GeneratePrometheusResponse(_root);
         response.AddHeader("Cache-Control", "no-cache");
         response.AddHeader("Access-Control-Allow-Origin", "*");
-        response.ContentType = "application/json";
-
-        // Write the response content to the output stream
-        try
-        {
-            response.ContentLength64 = buffer.Length;
-            Stream output = response.OutputStream;
-            output.Write(buffer, 0, buffer.Length);
-            output.Close();
-        }
-        catch (HttpListenerException)
-        { }
-
-        // Close the response
-        response.Close();
+        await SendResponseAsync(response, responseContent, "text/plain");
     }
 
-    private JObject GenerateJsonForNode(Node n, ref int nodeIndex)
+    private async Task SendJsonSensorAsync(HttpListenerResponse response, Dictionary<string, object> sensorData)
     {
-        JObject jsonNode = new()
+        // Convert the JObject to a JSON string
+        string responseContent = System.Text.Json.JsonSerializer.Serialize(sensorData);
+        response.AddHeader("Cache-Control", "no-cache");
+        response.AddHeader("Access-Control-Allow-Origin", "*");
+        await SendResponseAsync(response, responseContent, "application/json");
+    }
+        
+    private Dictionary<string, object> GenerateJsonForNode(Node n, ref int nodeIndex)
+    {
+        Dictionary<string, object> jsonNode = new()
         {
             ["id"] = nodeIndex++,
             ["Text"] = n.Text,
@@ -637,12 +681,21 @@ public class HttpServer
             case SensorNode sensorNode:
                 jsonNode["SensorId"] = sensorNode.Sensor.Identifier.ToString();
                 jsonNode["Type"] = sensorNode.Sensor.SensorType.ToString();
+
+                // Formatted values, e.g. Throughput will be measured in KB/s or MB/s depending on the value
                 jsonNode["Min"] = sensorNode.Min;
                 jsonNode["Value"] = sensorNode.Value;
                 jsonNode["Max"] = sensorNode.Max;
+
+                // Unformatted values for external systems to have consistent readings, e.g. Throughput will always be measured in B/s
+                jsonNode["RawMin"] = string.Format(sensorNode.Format, sensorNode.Sensor.Min);
+                jsonNode["RawValue"] = string.Format(sensorNode.Format, sensorNode.Sensor.Value);
+                jsonNode["RawMax"] = string.Format(sensorNode.Format, sensorNode.Sensor.Max);
+
                 jsonNode["ImageURL"] = "images/transparent.png";
                 break;
             case HardwareNode hardwareNode:
+                jsonNode["HardwareId"] = hardwareNode.Hardware.Identifier.ToString();
                 jsonNode["ImageURL"] = "images_icon/" + GetHardwareImageFile(hardwareNode);
                 break;
             case TypeNode typeNode:
@@ -653,7 +706,7 @@ public class HttpServer
                 break;
         }
 
-        JArray children = [];
+        List<object> children = new();
         foreach (Node child in n.Nodes)
         {
             children.Add(GenerateJsonForNode(child, ref nodeIndex));
@@ -686,7 +739,6 @@ public class HttpServer
             default: return "application/octet-stream";
         }
     }
-
     private static string GetHardwareImageFile(HardwareNode hn)
     {
         switch (hn.Hardware.HardwareType)
@@ -770,6 +822,26 @@ public class HttpServer
             return;
 
         StopHttpListener();
-        _listener.Abort();
+        try
+        {
+            _listener?.Abort();
+        }
+        catch { }
     }
+
+    private static async Task SendResponseAsync(HttpListenerResponse response, string content, string contentType)
+    {
+        byte[] buffer = Encoding.UTF8.GetBytes(content);
+        response.ContentType = contentType;
+        response.ContentLength64 = buffer.Length;
+
+        try
+        {
+            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+            response.OutputStream.Close();
+        }
+        catch (HttpListenerException)
+        { }
+    }
+
 }
