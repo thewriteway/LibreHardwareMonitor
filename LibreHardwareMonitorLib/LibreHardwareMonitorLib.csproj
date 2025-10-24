@@ -1,6 +1,5 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFrameworks>net472;netstandard2.0;net8.0;net9.0</TargetFrameworks>
     <AssemblyName>LibreHardwareMonitorLib</AssemblyName>
     <RootNamespace>LibreHardwareMonitor</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -18,23 +17,17 @@
     <LangVersion>latest</LangVersion>
     <PackageIcon>packageicon.png</PackageIcon>
     <GenerateResourceUsePreserializedResources>true</GenerateResourceUsePreserializedResources>
-    <Platforms>x64;x86;ARM64</Platforms>
-    <RuntimeIdentifiers>win-x64;win-x86;win-arm64</RuntimeIdentifiers>
-    <NoWarn>$(NoWarn);CA1416</NoWarn>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(BuildOnlyRefs)'=='true'">
-    <Platform>AnyCPU</Platform>
-    <ProduceOnlyReferenceAssembly>true</ProduceOnlyReferenceAssembly>
-    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <Platforms>x64</Platforms>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Debug'">
-    <OutputPath>..\bin\Debug\$(Platform)\</OutputPath>
+    <OutputPath>..\bin\Debug\</OutputPath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)'=='Release'">
-    <OutputPath>..\bin\Release\$(Platform)\</OutputPath>
+    <OutputPath>..\bin\Release\</OutputPath>
   </PropertyGroup>
   <PropertyGroup>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Resources\PawnIO\LpcIO.bin" />
@@ -70,5 +63,4 @@
       <Pack>True</Pack>
     </None>
   </ItemGroup>
-  <Import Project="main.nuget.target" Condition="'$(PackMainNuget)' == 'true'" />
 </Project>
