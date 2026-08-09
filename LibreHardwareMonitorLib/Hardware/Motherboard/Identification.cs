@@ -141,6 +141,8 @@ internal class Identification
                 return Model.B450M_Pro4;
             case var _ when name.Equals("B450M Pro4 R2.0", StringComparison.OrdinalIgnoreCase):
                 return Model.B450M_Pro4_R2_0;
+            case var _ when name.Equals("B550M Pro4", StringComparison.OrdinalIgnoreCase):
+                return Model.B550M_Pro4;
             case var _ when name.Equals("Fatal1ty AB350 Gaming K4", StringComparison.OrdinalIgnoreCase):
                 return Model.Fatal1ty_AB350_Gaming_K4;
             case var _ when name.Equals("AB350M-HDV", StringComparison.OrdinalIgnoreCase):
@@ -561,6 +563,8 @@ internal class Identification
             case var _ when name.Equals("B650I AX", StringComparison.OrdinalIgnoreCase):
             case var _ when name.Equals("A620I AX", StringComparison.OrdinalIgnoreCase):
                 return Model.B650I_AX;
+            case var _ when name.Equals("ROG STRIX Z370-G GAMING", StringComparison.OrdinalIgnoreCase):
+                return Model.ROG_STRIX_Z370_G_GAMING;
             case var _ when name.Equals("ROG STRIX Z390-E GAMING", StringComparison.OrdinalIgnoreCase):
                 return Model.ROG_STRIX_Z390_E_GAMING;
             case var _ when name.Equals("ROG STRIX Z390-F GAMING", StringComparison.OrdinalIgnoreCase):
